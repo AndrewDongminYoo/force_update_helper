@@ -48,7 +48,7 @@ The `RemoteConfigGistData` class can be used to fetch and parse some JSON in thi
 
 ```json
 {
-  "config" : {
+  "config": {
     "required_version": "2.0.0"
   }
 }

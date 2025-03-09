@@ -9,7 +9,7 @@ This can be used as part of the force update logic in your Flutter apps.
 To run locally:
 
 ```zsh
-dart run lib/server.dart 
+dart run lib/server.dart
 ```
 
 To call the endpoint:
