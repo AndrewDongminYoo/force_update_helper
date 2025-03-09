@@ -1,78 +1,109 @@
 import 'dart:developer';
 
 import 'package:flutter/foundation.dart';
+
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:pub_semver/pub_semver.dart';
 
-/// Client used to check if a force upgrade is needed
+import 'platform_utils.dart';
+
+/// A client that checks whether a forced upgrade is required for the app.
+///
+/// It compares the current app version with the required version fetched from a remote source.
+/// Additionally, it generates the appropriate app store URL based on the current platform.
 class ForceUpdateClient {
+  /// Creates a [ForceUpdateClient] with the provided parameters.
+  ///
+  /// [fetchRequiredVersion] is a callback to asynchronously retrieve the required version string.
+  /// [iosAppStoreId] is the identifier used to build the iOS App Store URL.
   const ForceUpdateClient({
     required this.fetchRequiredVersion,
-    this.fetchCurrentPatchVersion,
     required this.iosAppStoreId,
   });
 
-  /// Fetch the required version from the remote
-  final Future<String> Function() fetchRequiredVersion;
+  /// Asynchronous function to fetch the required version string.
+  final AsyncValueGetter<String> fetchRequiredVersion;
 
-  /// Optional callback to fetch the current patch version from code push solutions like Shorebird
-  final Future<String> Function()? fetchCurrentPatchVersion;
-
-  /// The app store ID for the iOS app
+  /// iOS App Store ID used to build the store URL for iOS.
   final String iosAppStoreId;
 
-  static const _name = 'Force Update';
+  static const _name = 'force_update';
+  static const _storeUrlApple = 'https://apps.apple.com/app/id';
+  static const _storeUrlGoogle =
+      'https://play.google.com/store/apps/details?id=';
 
-  /// Fetches the required version and checks if a force update is needed by
-  /// comparing it with the current version (from PackageInfo)
+  // Static cache for PackageInfo to avoid repeated asynchronous calls.
+  static Future<PackageInfo>? _cachedPackageInfo;
+  static Future<PackageInfo> get _packageInfo async {
+    _cachedPackageInfo ??= PackageInfo.fromPlatform();
+    return _cachedPackageInfo!;
+  }
+
+  /// Checks whether a forced app update is required.
+  ///
+  /// Retrieves the required version via [fetchRequiredVersion] and compares it to the current
+  /// version (extracted from [PackageInfo]). Returns `true` if an update is needed, `false` otherwise.
+  ///
+  /// This method applies only for iOS and Android platforms.
   Future<bool> isAppUpdateRequired() async {
-    // * Only force app update on iOS & Android
-    if (kIsWeb ||
-        defaultTargetPlatform != TargetPlatform.iOS &&
-            defaultTargetPlatform != TargetPlatform.android) {
+    // Only force app update on iOS & Android.
+    if (PlatformUtil.isWeb ||
+        (!PlatformUtil.isIOS && !PlatformUtil.isAndroid)) {
       return false;
     }
-    final requiredVersionStr = await fetchRequiredVersion();
-    if (requiredVersionStr.isEmpty) {
+    final requireVersionStr = await fetchRequiredVersion();
+    if (requireVersionStr.isEmpty) {
       log('Remote Config: required_version not set. Ignoring.', name: _name);
       return false;
     }
-    final patchVersion = await fetchCurrentPatchVersion?.call();
-    final packageInfo = await PackageInfo.fromPlatform();
-    final currentVersion = patchVersion ?? packageInfo.version;
 
-    // * On Android, the current version may appear as `^X.Y.Z(.*)`
-    // * But semver can only parse this if it's formatted as `^X.Y.Z-(.*)`
-    // * and we only care about X.Y.Z, so we can remove the flavor
-    final currentVersionStr =
-        RegExp(r'\d+\.\d+\.\d+').matchAsPrefix(currentVersion)!.group(0)!;
+    final packageInfo = await _packageInfo;
 
-    // * Parse versions in semver format
-    final parsedRequiredVersion = Version.parse(requiredVersionStr);
-    final parsedCurrentVersion = Version.parse(currentVersionStr);
+    // Safely extract version using regex.
+    final versionMatch =
+        RegExp(r'\d+\.\d+\.\d+').matchAsPrefix(packageInfo.version);
+    if (versionMatch == null) {
+      log('Could not extract a valid version from ${packageInfo.version}',
+          name: _name);
+      return false;
+    }
+    final currentVersionStr = versionMatch.group(0)!;
 
-    final updateRequired = parsedCurrentVersion < parsedRequiredVersion;
-    log(
+    try {
+      // Parse versions in semver format.
+      final requireVersion = Version.parse(requireVersionStr);
+      final currentVersion = Version.parse(currentVersionStr);
+
+      final updateRequired = currentVersion < requireVersion;
+      log(
         'Update ${updateRequired ? '' : 'not '}required. '
-        'Current version: $parsedCurrentVersion, required version: $parsedRequiredVersion',
-        name: _name);
-    return updateRequired;
+        'Current version: $currentVersion, required version: $requireVersion',
+        name: _name,
+      );
+      return updateRequired;
+    } on FormatException catch (e) {
+      log('Version parsing failed: ${e.message}', name: _name);
+      return false;
+    } catch (e) {
+      log('Unexpected error during version comparison: $e', name: _name);
+      return false;
+    }
   }
 
-  /// Returns the download URL for each store depending on the platform
+  /// Generates and returns the appropriate store URL based on the current platform.
+  ///
+  /// For iOS, the URL is constructed using the provided [iosAppStoreId]. For Android, it
+  /// uses the package name from [PackageInfo]. Returns `null` if the platform is unsupported.
   Future<String?> storeUrl() async {
-    if (kIsWeb) {
+    if (PlatformUtil.isWeb) {
       return null;
-    }
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
-      // * On iOS, use the given app ID
-      return iosAppStoreId.isNotEmpty
-          ? 'https://apps.apple.com/app/id$iosAppStoreId'
-          : null;
-    } else if (defaultTargetPlatform == TargetPlatform.android) {
-      final packageInfo = await PackageInfo.fromPlatform();
-      // * On Android, use the package name from PackageInfo
-      return 'https://play.google.com/store/apps/details?id=${packageInfo.packageName}';
+    } else if (PlatformUtil.isIOS) {
+      // On iOS, use the given app ID.
+      return iosAppStoreId.isNotEmpty ? _storeUrlApple + iosAppStoreId : null;
+    } else if (PlatformUtil.isAndroid) {
+      final packageInfo = await _packageInfo;
+      // On Android, use the package name from PackageInfo.
+      return _storeUrlGoogle + packageInfo.packageName;
     } else {
       log('No store URL for platform: ${defaultTargetPlatform.name}',
           name: _name);
